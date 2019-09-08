@@ -1,0 +1,15 @@
+{application, rebar3_bench,
+ [{description, "Rebar3 microbenchmark plugin"},
+  {vsn, "0.1.0"},
+  {registered, []},
+  {applications,
+   [kernel,
+    stdlib,
+    eministat
+   ]},
+  {env,[]},
+  {modules, []},
+
+  {licenses, ["Apache 2.0"]},
+  {links, []}
+ ]}.

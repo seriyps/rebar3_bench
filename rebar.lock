@@ -1,0 +1,6 @@
+{"1.1.0",
+[{<<"eministat">>,{pkg,<<"eministat">>,<<"0.10.1">>},0}]}.
+[
+{pkg_hash,[
+ {<<"eministat">>, <<"8D5C9D58EB6A9345E8A0146091813EFBD5695F65EADF8895DB6A3FB45F89A4AD">>}]}
+].

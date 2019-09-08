@@ -26,8 +26,15 @@ init(State) ->
 -spec do(rebar_state:t()) -> {ok, rebar_state:t()} | {error, string()}.
 do(State) ->
     {CliOpts, _} = rebar_state:command_parsed_args(State),
+    BaselineFile = dump_file(proplists:get_value(baseline, CliOpts), State),
+    Baseline = try_restore(BaselineFile, []),
+    rebar_api:debug("Baselines loaded from file '~ts': ~w",
+                    [BaselineFile, length(Baseline)]),
     Benches = find_benches(State, CliOpts),
-    run_benches(Benches, CliOpts),
+    Samples = run_benches(Benches, Baseline, CliOpts),
+    DumpFile = dump_file(proplists:get_value(save_baseline, CliOpts), State),
+    rebar_api:debug("Writing sample data to '~ts'", [DumpFile]),
+    dump(DumpFile, Samples),
     {ok, State}.
 
 -spec format_error(any()) ->  iolist().
@@ -45,73 +52,49 @@ opts() ->
       "name of benchmark to run within a specified module (comma-separated)"},
      {duration, $t, "duration", integer,
       "duration of single benchmark (default is 10s)"},
-     {samples, $s, "samples", integer,
+     {samples, $n, "num-samples", integer,
       "number of samples to collect and analyze (default is 100)"},
      {confidence, $c, "confidence", integer,
       "confidence level: 80, 90, 95, 98, 99 (default is 95)"},
      {parameter, $p, "parameter", string,
-      "which parameter to measure: wall_time, memory, reductions (default wall_time)"}].
+      "which parameter to measure: wall_time, memory, reductions (default wall_time)"},
+     {save_baseline, undefined, "save-baseline", string,
+      "save benchmark data to file with this name (default '_tip')"},
+     {baseline, undefined, "baseline", string,
+      "use data stored in file as baseline (default '_tip')"}].
 
-run_benches(Benches, OptsL) ->
+run_benches(Benches, Baseline, OptsL) ->
     Opts0 = maps:from_list(OptsL),
     Opts = Opts0#{log_fun => fun rebar_api:debug/2},
-    lists:foreach(
+    lists:map(
       fun({Mod, Fun}) ->
               rebar_api:info("Testing ~s:~s()", [Mod, Fun]),
               Samples = rebar3_bench_runner:run(Mod, Fun, Opts),
-              Stats = stats(Mod, Fun, Samples, Opts),
-              report(Mod, Fun, Stats, Opts)
+              Stats = stats(Mod, Fun, Samples, Baseline, Opts),
+              report(Stats, Opts),
+              {{Mod, Fun}, Samples}
       end, Benches).
 
-report(_Mod, _Fun, Stats, Opts) ->
-    Param = parameter(maps:get(parameter, Opts, "wall_time")),
-    #{n := N,
-      min := Min,
-      max := Max,
-      percentiles :=
-          #{25 := Perc25,
-            50 := Median,
-            75 := Perc75},
-      bootstrapped :=
-          #{mean := #{pt := Mean},
-            std_dev := #{pt := StdDev}},
-      outliers := {OutliersLow, OutliersHigh}
-     } = Stats,
-    %% StdDev = eministat_ds:std_dev(Dataset),
-    OutliersAll = OutliersLow + OutliersHigh,
-    {OutVar, Severity} = eministat_analysis:outlier_variance(Mean, StdDev, N),
-    rebar_api:info(
-      "Stats for ~s~n"
-      "Min:            ~ts~n"
-      "25 percentile:  ~ts~n"
-      "Median:         ~ts~n"
-      "75 percentile:  ~ts~n"
-      "Max:            ~ts~n"
-      "Bootstrapped~n"
-      "Mean:           ~ts~n"
-      "Std deviation:  ~ts~n"
-      "Outliers:      ~w/~w = ~w~n"
-      "Outlier variance: ~13g (~s)",
-      [Param,
-       unit(Min, Param), unit(Perc25, Param), unit(Median, Param),
-       unit(Perc75, Param), unit(Max, Param), unit(Mean, Param),
-       unit(StdDev, Param),
-       OutliersLow, OutliersHigh, OutliersAll, OutVar, Severity]),
-    (severe == Severity)
-        andalso rebar_api:warn(
-                  "Outlier variance is too high! Benchmark results might be "
-                  "non-representative. Try to repeat the benchmarks in more "
-                  "calm environment (no heavy background OS tasks) or "
-                  "run benchmark for a longer time", []).
+%%
+%% Stats calculation
 
-stats(Mod, Fun, Samples, Opts) ->
+stats(Mod, Fun, Samples, [], Opts) ->
     CI = maps:get(confidence, Opts, 95) * 1.0,
     Param = parameter(maps:get(parameter, Opts, "wall_time")),
     Name = atom_to_list(Mod) ++ ":" ++ atom_to_list(Fun),
     RawSamples = [maps:get(Param, S) || S <- Samples],
-    rebar_api:debug("Raw ~s samples: ~p", [Param, RawSamples]),
+    rebar_api:debug("Raw ~s samples:~n~p", [Param, RawSamples]),
     Vitals = vitals(Name, RawSamples, CI),
-    with_outliers(RawSamples, Vitals).
+    with_outliers(RawSamples, Vitals);
+stats(Mod, Fun, Samples, Baselines, Opts) ->
+    Stats = stats(Mod, Fun, Samples, [], Opts),
+    case proplists:get_value({Mod, Fun}, Baselines) of
+        undefined ->
+            Stats;
+        Baseline ->
+            with_baseline(Mod, Fun, Stats, Baseline, Opts)
+    end.
+
 
 parameter("wall_time") -> wall_time;
 parameter("wall-time") -> wall_time;
@@ -162,32 +145,175 @@ with_outliers(RawSamples,
     OutliersHigh =  eministat_resample:count(fun(P) -> P > (Perc75 + 1.5 * IQR) end, Ps),
     Vitals#{outliers => {OutliersLow, OutliersHigh}}.
 
+with_baseline(Mod, Fun, #{ds := Ds} = Stats, Baseline, Opts) ->
+    CI = maps:get(confidence, Opts, 95),
+    BStats = #{ds := BDs} = stats(Mod, Fun, Baseline, [], Opts),
+    Relative = eministat_analysis:relative(Ds, BDs, valid_ci(CI)),
+    Stats#{baseline => BStats,
+           relative => Relative}.
+
+%%
+%% Reporting
+
+report(#{baseline := BStats, relative := Relative} = Stats, Opts) ->
+    report_diff(Stats, BStats, Relative, Opts);
+report(Stats, Opts) ->
+    report_one(Stats, Opts).
+
+report_one(Stats, Opts) ->
+    Param = parameter(maps:get(parameter, Opts, "wall_time")),
+    #{n := N,
+      min := Min,
+      max := Max,
+      percentiles :=
+          #{25 := Perc25,
+            50 := Median,
+            75 := Perc75},
+      bootstrapped :=
+          #{mean := #{pt := Mean},
+            std_dev := #{pt := StdDev}},
+      outliers := {OutliersLow, OutliersHigh}
+     } = Stats,
+    %% StdDev = eministat_ds:std_dev(Dataset),
+    OutliersAll = OutliersLow + OutliersHigh,
+    {OutVar, Severity} = eministat_analysis:outlier_variance(Mean, StdDev, N),
+    rebar_api:info(
+      "Stats for ~s~n"
+      "Min:            ~ts~n"
+      "25 percentile:  ~ts~n"
+      "Median:         ~ts~n"
+      "75 percentile:  ~ts~n"
+      "Max:            ~ts~n"
+      "Outliers:       Lo: ~w; Hi: ~w; Sum: ~w~n"
+      "Outlier variance: ~13g (~s)~n"
+      "> Bootstrapped~n"
+      "Mean:           ~ts~n"
+      "Std deviation:  ~ts~n",
+      [Param,
+       unit(Min, Param), unit(Perc25, Param), unit(Median, Param),
+       unit(Perc75, Param), unit(Max, Param),
+       OutliersLow, OutliersHigh, OutliersAll, OutVar, Severity,
+       unit(Mean, Param), unit(StdDev, Param)
+      ]),
+    warn_severity(Severity).
+
+report_diff(Stats, BStats, Relative, Opts) ->
+    Param = parameter(maps:get(parameter, Opts, "wall_time")),
+    #{n := N,
+      min := Min,
+      max := Max,
+      percentiles :=
+          #{25 := Perc25,
+            50 := Median,
+            75 := Perc75},
+      bootstrapped :=
+          #{mean := #{pt := Mean},
+            std_dev := #{pt := StdDev}},
+      outliers := {OutliersLow, OutliersHigh}
+     } = Stats,
+    #{min := BMin,
+      max := BMax,
+      percentiles :=
+          #{25 := BPerc25,
+            50 := BMedian,
+            75 := BPerc75},
+      bootstrapped :=
+          #{mean := #{pt := BMean}}
+     } = BStats,
+    %% StdDev = eministat_ds:std_dev(Dataset),
+    OutliersAll = OutliersLow + OutliersHigh,
+    {OutVar, Severity} = eministat_analysis:outlier_variance(Mean, StdDev, N),
+    rebar_api:info(
+      "Stats for ~s~n"
+      "Min:              ~ts (~ts)~n"
+      "25 percentile:    ~ts (~ts)~n"
+      "Median:           ~ts (~ts)~n"
+      "75 percentile:    ~ts (~ts)~n"
+      "Max:              ~ts (~ts)~n"
+      "Outliers:         Lo: ~w; Hi: ~w; Sum: ~w~n"
+      "Outlier variance: ~10g (~s)~n"
+      "> Bootstrapped~n"
+      "Mean:             ~ts (~ts)~n"
+      "Std deviation:    ~ts~n"
+      "> Relative~n"
+      "~ts~n",
+      [Param,
+       unit(Min, Param), udiff(BMin, Min, Param),
+       unit(Perc25, Param), udiff(BPerc25, Perc25, Param),
+       unit(Median, Param), udiff(BMedian, Median, Param),
+       unit(Perc75, Param), udiff(BPerc75, Perc75, Param),
+       unit(Max, Param), udiff(BMax, Max, Param),
+       OutliersLow, OutliersHigh, OutliersAll, OutVar, Severity,
+       unit(Mean, Param), udiff(BMean, Mean, Param),
+       unit(StdDev, Param),
+       format_relative(Relative, Param)
+      ]),
+    warn_severity(Severity).
+
+warn_severity(severe) ->
+    rebar_api:warn(
+      "Outlier variance is too high! Benchmark result might be "
+      "non-representative. Try to repeat the benchmarks in more "
+      "calm environment (no heavy background OS tasks) or "
+      "run benchmark for a longer time", []);
+warn_severity(_) ->
+    ok.
+
+format_relative({no_difference, CI}, _) ->
+    io_lib:format("No difference found at ~.1f% confidence level", [CI]);
+format_relative({difference, #{confidence_level := CI,
+                               difference := {D, E},
+                               difference_pct := {DP, EP},
+                               pooled_s := SPool}}, Unit) ->
+    io_lib:format(
+      "Difference at ~.1f confidence~n"
+      " ~ts ± ~ts~n"
+      " ~8.2f%  ± ~5.2f%~n"
+      " (Student's t, pooled s = ~g",
+      [CI,
+       unit(D, Unit), unit(E, Unit),
+       DP, EP,
+       SPool]).
+
+
+udiff(Base, Val, Unit) ->
+    Diff = Val - Base,
+    Percent = abs(100 * Diff / Base),
+    Sign = case Diff < 0 of
+               true -> $-;
+               false -> $+
+           end,
+    [Sign, unit(abs(Diff), Unit) | io_lib:format(" / ~4.1f%", [Percent])].
 
 unit(Native, wall_time) ->
     Ns = erlang:convert_time_unit(round(Native), native, nanosecond),
-    if Ns < 10000 ->
-            io_lib:format("~7.2fns", [float(Ns)]);
-       Ns < 10000000 ->
-            io_lib:format("~7.2fμs", [Ns / 1000]);
-       Ns < 10000000000 ->
-            io_lib:format("~7.2fms", [Ns / 1000000])
+    Abs = abs(Ns),
+    if Abs < 10000 ->
+            io_lib:format("~8.2fns", [float(Ns)]);
+       Abs < 10000000 ->
+            io_lib:format("~8.2fμs", [Ns / 1000]);
+       true ->
+            io_lib:format("~8.2fms", [Ns / 1000000])
     end;
 unit(Words, memory) ->
     WS = erlang:system_info(wordsize),
     Bytes = Words * WS,
-    if Bytes < 1024 ->
+    Abs = abs(Bytes),
+    if Abs < 1024 ->
             io_lib:format("~4wb", [round(Bytes)]);
        true ->
             io_lib:format("~4wkb", [round(Bytes / 1024)])
     end;
 unit(Reds, reductions) ->
-    if Reds < 1000 ->
+    Abs = abs(Reds),
+    if Abs < 1000 ->
             integer_to_list(round(Reds));
-       Reds < 1000000 ->
+       Abs < 1000000 ->
             io_lib:format("~4wk", [round(Reds / 1000)]);
        true ->
             io_lib:format("~4wm", [round(Reds / 1000000)])
     end.
+
 
 %%
 %% Discovery
@@ -332,3 +458,78 @@ bench_prefix(Atom) ->
 
 module(File) ->
     list_to_atom(filename:basename(File, ".erl")).
+
+
+%%
+%% Bench data loader/dumper
+
+-define(DUMP_FMT_VERSION, [0, 1, 0]).
+-define(DUMP_010_FIELDS, [wall_time, memory, reductions]).
+
+-type dump_sample() :: {{module(), atom()}, rebar3_bench_runner:sample()}.
+
+-spec dump(file:name_all(), [dump_sample()]) -> ok.
+dump(FileName, RawSamples) ->
+    ok = filelib:ensure_dir(FileName),
+    ok = file:write_file(FileName, encode_dump(RawSamples)).
+
+-spec try_restore(file:name_all(), Default) -> [dump_sample()] | Default when
+      Default :: any().
+try_restore(FileName, Default) ->
+    try restore(FileName)
+    catch throw:_ ->
+            Default
+    end.
+
+restore(FileName) ->
+    case file:read_file(FileName) of
+        {ok, Bin} ->
+            decode_dump(Bin);
+        {error, enoent} ->
+            throw(enoent)
+    end.
+
+-spec dump_file(undefined | string(), rebar_state:t()) -> file:name_all().
+dump_file(undefined, State) ->
+    dump_file("_tip", State);
+dump_file(Name, State) ->
+    filename:join(bench_dir(State), Name).
+
+bench_dir(State) ->
+    filename:join([rebar_dir:base_dir(State), "bench"]).
+
+
+encode_dump(Runs) ->
+    CompactRuns = lists:map(
+      fun({{M, F}, Samples}) ->
+              %% Convert list of maps to list of lists
+              CompactSamples =
+                  lists:map(
+                    fun(Sample) ->
+                            [maps:get(K, Sample) || K <- ?DUMP_010_FIELDS]
+                    end, Samples),
+              {M, F, CompactSamples}
+      end, Runs),
+    term_to_binary(
+      {?DUMP_FMT_VERSION,
+       CompactRuns}).
+
+decode_dump(Bin) ->
+    convert_dump(binary_to_term(Bin)).
+
+convert_dump({?DUMP_FMT_VERSION, CompactRuns}) ->
+    lists:map(fun({M, F, CompactSamples}) ->
+                      {{M, F},
+                       lists:map(
+                         fun(Values) ->
+                                 maps:from_list(lists:zip(?DUMP_010_FIELDS, Values))
+                         end, CompactSamples)}
+              end, CompactRuns).
+
+%% FIXME:
+valid_ci(80) -> 1;
+valid_ci(90) -> 2;
+valid_ci(95) -> 3;
+valid_ci(98) -> 4;
+valid_ci(99) -> 5;
+valid_ci(_) -> error(badarg).

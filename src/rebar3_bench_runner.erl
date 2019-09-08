@@ -10,10 +10,12 @@
 -export([run/3]).
 -export([do_run/5]).
 
+-export_type([sample/0, opts/0]).
+
 -define(WARMUP_MS, 3000).
 -define(NS, 1000000000).
 
--type result() :: #{memory => float(),
+-type sample() :: #{memory => float(),
                     reductions => float(),
                     wall_time => float()}.
 
@@ -21,7 +23,7 @@
                   samples => pos_integer(),
                   log_fun => fun( (string(), [any()]) -> any() )}.
 
--spec run(module(), atom(), opts()) -> [result()].
+-spec run(module(), atom(), opts()) -> [sample()].
 run(Mod, Fun, Opts) ->
     Ref = make_ref(),
     Pid = proc_lib:spawn_opt(?MODULE, do_run, [self(), Ref, Mod, Fun, Opts],

@@ -1,0 +1,13 @@
+{application, kv_battle,
+ [{description, "stdlib key-value storage structures benchmark"},
+  {vsn, "0.1.0"},
+  {registered, []},
+  {applications,
+   [kernel,
+    stdlib
+   ]},
+  {env,[]},
+  {modules, []},
+
+  {licenses, ["Apache 2.0"]}
+ ]}.

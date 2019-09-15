@@ -447,9 +447,9 @@ app_includes(App) ->
 
 
 benches(any, Mod) ->
-    [{Mod, Bench} || {Bench,1} <- Mod:module_info(exports), bench_prefix(Bench)];
+    [{Mod, Bench} || {Bench, 2} <- Mod:module_info(exports), bench_prefix(Bench)];
 benches(Benches, Mod) ->
-    [{Mod, Bench} || {Bench,1} <- Mod:module_info(exports),
+    [{Mod, Bench} || {Bench, 2} <- Mod:module_info(exports),
                     lists:member(atom_to_list(Bench), Benches)].
 
 bench_prefix(Atom) ->

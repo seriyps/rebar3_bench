@@ -3,7 +3,8 @@ rebar3 bench
 
 Rebar3 microbenchmark plugin
 
-Was inspired by Rust's [criterion.rs](https://crates.io/crates/criterion).
+Was inspired by Haskell [criterion](https://hackage.haskell.org/package/criterion) and
+Rust's [criterion.rs](https://crates.io/crates/criterion).
 Parts of implementation were borrowed from [rebar3 proper](https://hex.pm/packages/rebar3_proper) plugin.
 It relies on [eministat](https://hex.pm/packages/eministat) for statistical calculations.
 
@@ -34,24 +35,44 @@ options functions:
 
 ```
 -export([reverse/1,
-         bench_reverse/1,
+         bench_reverse/2,
          sort/1,
-         bench_sort/1]).
+         bench_sort/2]).
 
-reverse(input) ->
+reverse({input, _}) ->
     lists:seq(1, 1000).
 
-bench_reverse(List) ->
+bench_reverse(List, _) ->
     lists:reverse(List).
 
-sort(input) ->
+
+sort({input, _}) ->
     lists:seq(1, 1000).
 
-bench_sort(List) ->
+bench_sort(List, _) ->
     lists:sort(List).
+
+
+server(init) ->
+    % init is called only once in the same process where benchmark will be running
+    % at the very beginning of benchmark.
+    % Value returned from this callback will be passed to server({input, State}),
+    % bench_server(_, State) and server({stop, State})
+    my_server:start();
+server({input, _Server}) ->
+    % This callback is called after `init` to generate benchmark input data.
+    % Returned value will be passed to bench_server(Input, _)
+    binary:copy(<<1>>, 1024);
+server({stop, Server}) ->
+    % Called only once at the very end of benchmark
+    my_server:stop(Server).
+
+bench_server(BinaryInput, Server) ->
+    my_server:send(BinaryInput, Server),
+    BinaryInput = my_server:recv(Server).
 ```
 
-Options function will be called once at the beginning of benchmark and `bench_` function will be
+Options function will be normally called once before and after benchmark and `bench_` function will be
 called lots of times.
 
 It's importand that input and benchmark are as deterministic as possible. Try to not depend on
@@ -60,6 +81,7 @@ use of random generators, time or other side effects.
 Then just call your plugin directly in an existing application (it will auto-discover your benchmarks):
 
 ```
+$ rebar3 bench
 ===> Testing bench_kv:bench_maps()
 ===> Stats for wall_time
 Min:              133.00ns
@@ -74,6 +96,9 @@ Mean:             135.00ns
 Std deviation:      5.00ns
 ```
 
+Please, refer to [eministat README](https://github.com/jlouis/eministat#description-of-the-output)
+to find out what does the output mean.
+
 This will collect 100 samples, dump them to special directory under `_build` and calculates
 statistics over them.
 
@@ -85,8 +110,6 @@ regression:
 
 ```
 $ rebar3 bench
-===> Fetching rebar3_bench
-===> Compiling rebar3_bench
 ===> Testing bench_kv:bench_maps()
 ===> Stats for wall_time
 Min:                133.00ns (+    0.00ns /  0.3%)
@@ -106,8 +129,9 @@ Difference at 95.0 confidence
  (Student's t, pooled s = 3.21558
 ```
 
+### Example workflow
+
 You can use `--dump-baseline` and `--baseline` to manage benchmark samples dumps.
-Example workflow:
 
 ```
 git checkout master
@@ -123,8 +147,7 @@ rebar3 bench --baseline master
 rebar3 bench --baseline master
 ```
 
-Avaliable options
------------------
+### Avaliable options
 
 ```
 $ rebar3 help bench

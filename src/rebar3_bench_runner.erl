@@ -37,10 +37,17 @@ run(Mod, Fun, Opts) ->
     end.
 
 do_run(From, Ref, Mod, Fun, Opts) ->
+    Res = with_setup(
+            fun(St) ->
+                    do_run(Mod, Fun, St, Opts)
+            end, Mod, Fun),
+    From ! {result, self(), Ref, Res}.
+
+do_run(Mod, Fun, St, Opts) ->
     %% warmup
     log(Opts, "Warmup for ~ws~n", [round(?WARMUP_MS / 1000)]),
-    Input = input(Mod, Fun),
-    WarmupRuns = warmup(Mod, Fun, Input, Opts),
+    Input = input(Mod, Fun, St),
+    WarmupRuns = warmup(Mod, Fun, Input, St, Opts),
     log(Opts, "Bench function called ~p times during warmup~n", [WarmupRuns]),
     %% run
     NPerSample = decide_sample_n_runs(WarmupRuns, Opts),
@@ -49,26 +56,45 @@ do_run(From, Ref, Mod, Fun, Opts) ->
     log(Opts, "Will run for ~ws: ~w samples, ~w iterations each~n",
         [MaxDurationNs, NSamples, NPerSample]),
     Start = erlang:monotonic_time(),
-    Res = run_n_samples(Mod, Fun, Input, NPerSample, NSamples, []),
+    Res = run_n_samples(Mod, Fun, Input, St, NPerSample, NSamples, []),
     Runtime = erlang:monotonic_time() - Start,
     log(Opts, "Real run time: ~wms~n",
         [erlang:convert_time_unit(Runtime, native, millisecond)]),
-    From ! {result, self(), Ref, Res}.
+    Res.
 
-input(Mod, Fun) ->
+%% Calls
+%% `State = Mod:OptsFun(init)' before and
+%% `Mod:OptsFun({stop, State})' after F
+with_setup(F, Mod, Fun) ->
+    St = opts_call(Mod, Fun, init, []),
+    try F(St)
+    after
+        opts_call(Mod, Fun, {stop, St}, [])
+    end.
+
+input(Mod, Fun, St) ->
+    opts_call(Mod, Fun, {input, St}, []).
+
+opts_call(Mod, Name, Arg, Default) ->
+    F = opts_fun(Mod, Name),
+    try F(Arg)
+    catch error:R when R == undef;
+                       R == function_clause ->
+            Default
+    end.
+
+opts_fun(Mod, Fun) ->
     "bench_" ++ NameS = atom_to_list(Fun),
     Name = list_to_atom(NameS),
-    try Mod:Name(input)
-    catch error:undef ->
-            []
-    end.
+    fun Mod:Name/1.
+
 
 %% == Warmup ==
 %% Try to warmup CPU/memory for 3 seconds & collect data to adjust chunk sizes
-warmup(Mod, Fun, Input, Opts) ->
+warmup(Mod, Fun, Input, St, Opts) ->
     %% Trying to adjust N calls per run to make one run_n in 10ms
     Start = erlang:monotonic_time(),
-    #{wall_time := PerIter} = run_n(Mod, Fun, Input, 50),
+    #{wall_time := PerIter} = run_n(Mod, Fun, Input, St, 50),
     Runtime = erlang:monotonic_time() - Start,
     BenchRuntime = PerIter * 10,
     Overhead = Runtime - BenchRuntime,
@@ -82,15 +108,15 @@ warmup(Mod, Fun, Input, Opts) ->
               "ChunkSize: ~p~n",
               [Runtime, PerIter, Overhead, TimeToRun, ChunkSize]),
     erlang:send_after(?WARMUP_MS, self(), warmup_end),
-    warmup_loop(Mod, Fun, Input, 0, ChunkSize).
+    warmup_loop(Mod, Fun, Input, St, 0, ChunkSize).
 
-warmup_loop(Mod, Fun, Input, N, PerIter) ->
+warmup_loop(Mod, Fun, Input, St, N, PerIter) ->
     receive
         warmup_end ->
             N
     after 0 ->
-            run_n(Mod, Fun, Input, PerIter),
-            warmup_loop(Mod, Fun, Input, N + PerIter, PerIter)
+            run_n(Mod, Fun, Input, St, PerIter),
+            warmup_loop(Mod, Fun, Input, St, N + PerIter, PerIter)
     end.
 
 decide_sample_n_runs(WarmupRuns, Opts) ->
@@ -106,20 +132,20 @@ decide_sample_n_runs(WarmupRuns, Opts) ->
 
 %% == Main run ==
 %% Run `run_n` collecting `Sample` samples
-run_n_samples(_Mod, _Fun, _Input, _NPerSample, 0, Acc) ->
+run_n_samples(_Mod, _Fun, _Input, _St, _NPerSample, 0, Acc) ->
     Acc;
-run_n_samples(Mod, Fun, Input, NPerSample, Sample, Acc0) ->
-    Acc = [run_n(Mod, Fun, Input, NPerSample) | Acc0],
-    run_n_samples(Mod, Fun, Input, NPerSample, Sample - 1, Acc).
+run_n_samples(Mod, Fun, Input, St, NPerSample, Sample, Acc0) ->
+    Acc = [run_n(Mod, Fun, Input, St, NPerSample) | Acc0],
+    run_n_samples(Mod, Fun, Input, St, NPerSample, Sample - 1, Acc).
 
 %% Run inner tight loop by calling Mod:Fun(Input) N times and taking
 %% measurements before and after.
-run_n(Mod, Fun, Input, N) ->
+run_n(Mod, Fun, Input, St, N) ->
     garbage_collect(self()),
     StartProcInfo = proc_collect(),
+    F = fun Mod:Fun/2,
     Start = erlang:monotonic_time(),
-    F = fun Mod:Fun/1,
-    do_run_n(F, Input, N),
+    ok = do_run_n(F, Input, St, N),
     End = erlang:monotonic_time(),
     EndProcInfo = proc_collect(),
     diff(N,
@@ -127,11 +153,11 @@ run_n(Mod, Fun, Input, N) ->
          EndProcInfo#{wall_time => End}).
 
 %% Inner tight loop
-do_run_n(_, _, 0) ->
+do_run_n(_, _, _, 0) ->
     ok;
-do_run_n(F, St, N) ->
-    F(St),
-    do_run_n(F, St, N - 1).
+do_run_n(F, Input, St, N) ->
+    F(Input, St),
+    do_run_n(F, Input, St, N - 1).
 
 %% == Helpers ==
 proc_collect() ->

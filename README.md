@@ -74,6 +74,10 @@ bench_server(BinaryInput, Server) ->
 
 Options function will be normally called once before and after benchmark and `bench_` function will be
 called lots of times.
+Each benchmark is executed in a separate process with `{priority, high}, {min_heap_size, 5mb}`.
+Garbage-collection is forced before time measurement is started, but if your benchmark
+function produces a lot of heap data and benchmark duration (`-t` option) is high enough, it's
+still possible that garbage collection will be triggered during benchmark execution.
 
 It's importand that input and benchmark are as deterministic as possible. Try to not depend on
 use of random generators, time or other side effects.

@@ -12,8 +12,8 @@
 
 -export_type([sample/0, opts/0]).
 
--define(WARMUP_MS, 3000).
 -define(NS, 1000000000).
+-define(HEAP_SIZE_MB, 5).
 
 -type sample() :: #{memory => float(),
                     reductions => float(),
@@ -21,15 +21,24 @@
 
 -type opts() :: #{duration => pos_integer(),
                   samples => pos_integer(),
+                  warmup_duration => pos_integer(),
                   log_fun => fun( (string(), [any()]) -> any() )}.
 
 -spec run(module(), atom(), opts()) -> [sample()].
-run(Mod, Fun, Opts) ->
+run(Mod, Fun, Opts0) ->
+    Opts = maps:merge(
+             #{duration => 10,
+               samples => 100,
+               warmup_duration => 3,
+               log_fun => fun io:format/2},
+             Opts0),
     Ref = make_ref(),
+    %% TODO: make it configurable?
+    HeapSize = ?HEAP_SIZE_MB * 1024 * 1024 div erlang:system_info(wordsize),
     Pid = proc_lib:spawn_opt(?MODULE, do_run, [self(), Ref, Mod, Fun, Opts],
                             [link,
-                             {priority, high}%% ,
-                             %% {min_heap_size, 1024}
+                             {priority, high},
+                             {min_heap_size, HeapSize}
                             ]),
     receive
         {result, Pid, Ref, Result} ->
@@ -45,14 +54,14 @@ do_run(From, Ref, Mod, Fun, Opts) ->
 
 do_run(Mod, Fun, St, Opts) ->
     %% warmup
-    log(Opts, "Warmup for ~ws~n", [round(?WARMUP_MS / 1000)]),
+    log(Opts, "Warmup for ~ws~n", [maps:get(warmup_duration, Opts)]),
     Input = input(Mod, Fun, St),
     WarmupRuns = warmup(Mod, Fun, Input, St, Opts),
     log(Opts, "Bench function called ~p times during warmup~n", [WarmupRuns]),
     %% run
     NPerSample = decide_sample_n_runs(WarmupRuns, Opts),
-    MaxDurationNs = maps:get(duration, Opts, 10),
-    NSamples = maps:get(samples, Opts, 100),
+    MaxDurationNs = maps:get(duration, Opts),
+    NSamples = maps:get(samples, Opts),
     log(Opts, "Will run for ~ws: ~w samples, ~w iterations each~n",
         [MaxDurationNs, NSamples, NPerSample]),
     Start = erlang:monotonic_time(),
@@ -91,23 +100,33 @@ opts_fun(Mod, Fun) ->
 
 %% == Warmup ==
 %% Try to warmup CPU/memory for 3 seconds & collect data to adjust chunk sizes
-warmup(Mod, Fun, Input, St, Opts) ->
+warmup(Mod, Fun, Input, St, #{duration := MaxDurationS,
+                              warmup_duration := WarmupDurationS,
+                              samples := NSamples} = Opts) ->
     %% Trying to adjust N calls per run to make one run_n in 10ms
+    SeedIters = 50,
     Start = erlang:monotonic_time(),
-    #{wall_time := PerIter} = run_n(Mod, Fun, Input, St, 50),
-    Runtime = erlang:monotonic_time() - Start,
-    BenchRuntime = PerIter * 10,
-    Overhead = Runtime - BenchRuntime,
-    Desired = erlang:convert_time_unit(10, millisecond, native),
+    #{wall_time := PerIter} = run_n(Mod, Fun, Input, St, SeedIters),
+    TotalRuntime = erlang:monotonic_time() - Start,
+    %% If we can't run benchmark at least 10 times during warmup, warmup
+    %% duration should be increased
+    ((PerIter * 10) < erlang:convert_time_unit(WarmupDurationS, second, native))
+        orelse error(too_short_warmup),
+    BenchRuntime = PerIter * SeedIters,
+    Overhead = TotalRuntime - BenchRuntime,
+    %% We want one warmup loop to run for the same time as single benchmark
+    %% sample, but not more than 0.5s
+    DesiredMs = min(500, MaxDurationS * 1000 div NSamples),
+    Desired = erlang:convert_time_unit(DesiredMs, millisecond, native),
     TimeToRun = Desired - Overhead,
     ChunkSize = max(10, round(TimeToRun / PerIter)),
-    log(Opts, "Runtime: ~p  "
+    log(Opts, "TotalRuntime: ~p  "
               "PerIter: ~p  "
               "Overhead: ~p  "
               "TimeToRun: ~p  "
               "ChunkSize: ~p~n",
-              [Runtime, PerIter, Overhead, TimeToRun, ChunkSize]),
-    erlang:send_after(?WARMUP_MS, self(), warmup_end),
+              [TotalRuntime, PerIter, Overhead, TimeToRun, ChunkSize]),
+    erlang:send_after(WarmupDurationS * 1000, self(), warmup_end),
     warmup_loop(Mod, Fun, Input, St, 0, ChunkSize).
 
 warmup_loop(Mod, Fun, Input, St, N, PerIter) ->
@@ -119,14 +138,15 @@ warmup_loop(Mod, Fun, Input, St, N, PerIter) ->
             warmup_loop(Mod, Fun, Input, St, N + PerIter, PerIter)
     end.
 
-decide_sample_n_runs(WarmupRuns, Opts) ->
+decide_sample_n_runs(WarmupRuns, #{duration := MaxDuration,
+                                   warmup_duration := WarmupDuration,
+                                   samples := NSamples}) ->
     %% WarmupRuns - how many times we managed to call the function during 3s
     %% warmup, including overhead
-    MaxDurationNs = maps:get(duration, Opts, 10) * ?NS,
-    NSamples = maps:get(samples, Opts, 100),
+    MaxDurationNs = MaxDuration * ?NS,
     MaxSampleDurationNs = MaxDurationNs / NSamples,
     WarmupDurationNs = erlang:convert_time_unit(
-                          ?WARMUP_MS, millisecond, nanosecond),
+                          WarmupDuration, second, nanosecond),
     OneCallDurationNs = WarmupDurationNs / WarmupRuns,
     round(MaxSampleDurationNs / OneCallDurationNs).
 
@@ -170,6 +190,5 @@ diff(N, ProcStart, ProcEnd) ->
               (V - maps:get(K, ProcStart)) / N
       end, ProcEnd).
 
-log(Opts, Fmt, Args) ->
-    L = maps:get(log_fun, Opts, fun io:format/2),
+log(#{log_fun := L}, Fmt, Args) ->
     L(Fmt, Args).

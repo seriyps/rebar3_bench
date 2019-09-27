@@ -70,6 +70,7 @@ run_benches(Benches, Baseline, OptsL) ->
       fun({Mod, Fun}) ->
               rebar_api:info("Testing ~s:~s()", [Mod, Fun]),
               Samples = rebar3_bench_runner:run(Mod, Fun, Opts),
+              rebar_api:debug("Raw samples:~n~p", [Samples]),
               Stats = stats(Mod, Fun, Samples, Baseline, Opts),
               report(Stats, Opts),
               {{Mod, Fun}, Samples}
@@ -80,10 +81,9 @@ run_benches(Benches, Baseline, OptsL) ->
 
 stats(Mod, Fun, Samples, [], Opts) ->
     CI = maps:get(confidence, Opts, 95) * 1.0,
-    Param = parameter(maps:get(parameter, Opts, "wall_time")),
     Name = atom_to_list(Mod) ++ ":" ++ atom_to_list(Fun),
+    Param = parameter(maps:get(parameter, Opts, "wall_time")),
     RawSamples = [maps:get(Param, S) || S <- Samples],
-    rebar_api:debug("Raw ~s samples:~n~p", [Param, RawSamples]),
     Vitals = vitals(Name, RawSamples, CI),
     with_outliers(RawSamples, Vitals);
 stats(Mod, Fun, Samples, Baselines, Opts) ->

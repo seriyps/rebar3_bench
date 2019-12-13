@@ -425,7 +425,7 @@ compile(State, AppName, Src, Out) ->
     NewOpts = lists:foldl(fun({K, V}, Dict) -> rebar_opts:set(Dict, K, V) end,
                           Opts,
                           [{src_dirs, ["."]}]),
-    IncludeOpts = add_includes(NewOpts, State),
+    IncludeOpts = add_includes(Out, NewOpts, State),
     rebar_erlc_compiler:compile(IncludeOpts, Src, ec_cnv:to_list(Out)).
 
 find_app(AppName, State) ->
@@ -433,8 +433,9 @@ find_app(AppName, State) ->
                     rebar_app_info:name(App) =:= AppName],
     App.
 
-add_includes(NewOpts, State) ->
-    Includes = lists:flatmap(fun app_includes/1, rebar_state:project_apps(State)),
+add_includes(Out, NewOpts, State) ->
+    Includes = [{i, Out}] ++
+                lists:flatmap(fun app_includes/1, rebar_state:project_apps(State)),
     dict:append_list(erl_opts, Includes, NewOpts).
 
 app_includes(App) ->

@@ -300,9 +300,11 @@ unit(Words, memory) ->
     Bytes = Words * WS,
     Abs = abs(Bytes),
     if Abs < 1024 ->
-            io_lib:format("~4wb", [round(Bytes)]);
+            io_lib:format("~4wB", [round(Bytes)]);
+       Abs < 1024 * 1024 ->
+            io_lib:format("~4wKiB", [round(Bytes / 1024)]);
        true ->
-            io_lib:format("~4wkb", [round(Bytes / 1024)])
+            io_lib:format("~4wMiB", [round(Bytes / (1024 * 1024))])
     end;
 unit(Reds, reductions) ->
     Abs = abs(Reds),

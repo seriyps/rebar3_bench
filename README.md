@@ -108,7 +108,7 @@ statistics over them.
 
 If you make your optimizations and run the same command again, it will
 again collect 100 samples using your new code, calculates statistics, comparing
-results with previous dump and will try to statistically proove that there exists
+results with previous dump and will try to statistically prove that there exists
 significant difference between results of two runs - if there is an improvement or
 regression:
 
@@ -151,7 +151,7 @@ rebar3 bench --baseline master
 rebar3 bench --baseline master
 ```
 
-### Avaliable options
+### Available options
 
 ```
 $ rebar3 help bench

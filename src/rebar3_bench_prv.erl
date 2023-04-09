@@ -52,26 +52,26 @@ format_error(Reason) ->
 %% Private
 
 opts() ->
-    [{dir, $d, "dir", string,
-      "directory where the benchmark tests are located (defaults to \"test\")"},
+    [{dir, $d, "dir", {string, "test"},
+      "directory where the benchmark tests are located"},
      {module, $m, "module", string,
       "name of one or more modules to run (comma-separated)"},
      {benches, $b, "bench", string,
       "name of benchmark to run within a specified module (comma-separated)"},
-     {duration, $t, "duration", integer,
-      "duration of single benchmark (default is 10s)"},
-     {samples, $n, "num-samples", integer,
-      "number of samples to collect and analyze (default is 100)"},
-     {confidence, undefined, "confidence", integer,
-      "confidence level: 80, 90, 95, 98, 99 (default is 95)"},
+     {duration, $t, "duration", {integer, 10},
+      "duration of single benchmark, in seconds"},
+     {samples, $n, "num-samples", {integer, 100},
+      "number of samples to collect and analyze"},
+     {confidence, undefined, "confidence", {integer, 95},
+      "confidence level: 80, 90, 95, 98, 99"},
      {cover, $c, "cover", {boolean, false},
       "run benchmarks in coverage mode (no measurements are made), generate cover data"},
-     {parameter, $p, "parameter", string,
-      "which parameter to measure: wall_time, memory, reductions (default wall_time)"},
-     {save_baseline, undefined, "save-baseline", string,
-      "save benchmark data to file with this name (default '_tip')"},
-     {baseline, undefined, "baseline", string,
-      "use data stored in file as baseline (default '_tip')"}].
+     {parameter, $p, "parameter", {string, "wall_time"},
+      "which parameter to measure: wall_time, memory, reductions"},
+     {save_baseline, undefined, "save-baseline", {string, "_tip"},
+      "save benchmark data to file with this name"},
+     {baseline, undefined, "baseline", {string, "_tip"},
+      "use data stored in file as baseline"}].
 
 run_benches(Benches, Baseline, OptsL) ->
     Opts0 = maps:from_list(OptsL),
@@ -300,7 +300,7 @@ format_relative({difference, #{confidence_level := CI,
       "Difference at ~.1f confidence~n"
       " ~ts ± ~ts~n"
       " ~8.2f%  ± ~5.2f%~n"
-      " (Student's t, pooled s = ~g",
+      " (Student's t, pooled s = ~g)",
       [CI,
        unit(D, Unit), unit(E, Unit),
        DP, EP,

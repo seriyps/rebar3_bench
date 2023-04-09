@@ -130,8 +130,20 @@ Std deviation:        2.00ns
 Difference at 95.0 confidence
     -2.00ns ±     1.00ns
     -1.60%  ±  0.77%
- (Student's t, pooled s = 3.21558
+ (Student's t, pooled s = 3.21558)
 ```
+
+The most important field to pay attention is `Mean`: `135.00ns (-    2.00ns /  1.6%)` means
+that the runtime of the single call to benchmarked function decreased by 2ns (1.6%), which
+is a very minor improvement.
+
+However, in the section below `>Relative` the statistical proof says, that this improvement is
+not caused by random fluctuations, but is quite stable - "proven".
+
+Another important data point is `Outlier variance`. If the value is more than ~0.5, it means
+that the runtime of benchmarked function varies a lot between calls. So you need to either
+simplify this function, remove side-effects from it or increase the benchmark runtime to
+smoothen the influence of side-effects.
 
 ### Example workflow
 
@@ -151,28 +163,41 @@ rebar3 bench --baseline master
 rebar3 bench --baseline master
 ```
 
+### Cover mode
+
+It might be interesting to see which lines of code your benchmark actually covers and what are
+the most "hot" code paths. You can run your benchmark with "cover" enabled:
+`rebar3 bench --cover`. It will run your benchmarks and will write coverage data to rebar3
+standard destination, you can use `rebar3 cover` to see the report.
+We don't do any measurements calculate statistics or write baseline files in `cover` mode,
+because cover-compiled code is much slower.
+
 ### Available options
 
 ```
 $ rebar3 help bench
 Run microbenchmarks from callback modules
-Usage: rebar3 bench [-d <dir>] [-m <module>] [-b <benches>]
-                    [-t <duration>] [-n <samples>] [-c <confidence>]
-                    [-p <parameter>] [--save-baseline <save_baseline>]
-                    [--baseline <baseline>]
+Usage: rebar3 bench [-d [<dir>]] [-m <module>] [-b <benches>]
+                    [-t [<duration>]] [-n [<samples>]]
+                    [--confidence [<confidence>]] [-c [<cover>]]
+                    [-p [<parameter>]]
+                    [--save-baseline [<save_baseline>]]
+                    [--baseline [<baseline>]]
 
-  -d, --dir          directory where the benchmark tests are located
-                     (defaults to "test")
+  -d, --dir          directory where the benchmark tests are located 
+                     [default: test]
   -m, --module       name of one or more modules to run (comma-separated)
-  -b, --bench        name of benchmark to run within a specified module
+  -b, --bench        name of benchmark to run within a specified module 
                      (comma-separated)
-  -t, --duration     duration of single benchmark (default is 10s)
-  -n, --num-samples  number of samples to collect and analyze (default is
-                     100)
-  -c, --confidence   confidence level: 80, 90, 95, 98, 99 (default is 95)
-  -p, --parameter    which parameter to measure: wall_time, memory,
-                     reductions (default wall_time)
-  --save-baseline    save benchmark data to file with this name (default
-                     '_tip')
-  --baseline         use data stored in file as baseline (default '_tip')
+  -t, --duration     duration of single benchmark, in seconds [default: 10]
+  -n, --num-samples  number of samples to collect and analyze [default: 
+                     100]
+  --confidence       confidence level: 80, 90, 95, 98, 99 [default: 95]
+  -c, --cover        run benchmarks in coverage mode (no measurements are 
+                     made), generate cover data [default: false]
+  -p, --parameter    which parameter to measure: wall_time, memory, 
+                     reductions [default: wall_time]
+  --save-baseline    save benchmark data to file with this name [default: 
+                     _tip]
+  --baseline         use data stored in file as baseline [default: _tip]
 ```

@@ -24,17 +24,25 @@ init(State) ->
     {ok, rebar_state:add_provider(State, Provider)}.
 
 -spec do(rebar_state:t()) -> {ok, rebar_state:t()} | {error, string()}.
-do(State) ->
-    {CliOpts, _} = rebar_state:command_parsed_args(State),
+do(State0) ->
+    {CliOpts, _} = rebar_state:command_parsed_args(State0),
+    Cover = proplists:get_value(cover, CliOpts, false),
+    State = maybe_cover_compile(State0, Cover),
     BaselineFile = dump_file(proplists:get_value(baseline, CliOpts), State),
     Baseline = try_restore(BaselineFile, []),
     rebar_api:debug("Baselines loaded from file '~ts': ~w",
                     [BaselineFile, length(Baseline)]),
     Benches = find_benches(State, CliOpts),
     Samples = run_benches(Benches, Baseline, CliOpts),
+    ok = maybe_write_coverdata(State, Cover),
     DumpFile = dump_file(proplists:get_value(save_baseline, CliOpts), State),
-    rebar_api:debug("Writing sample data to '~ts'", [DumpFile]),
-    dump(DumpFile, Samples),
+    case Cover of
+        false ->
+            rebar_api:debug("Writing sample data to '~ts'", [DumpFile]),
+            dump(DumpFile, Samples);
+        true ->
+            rebar_api:debug("Not writing sample data - cover mode enabled", [])
+    end,
     {ok, State}.
 
 -spec format_error(any()) ->  iolist().
@@ -54,8 +62,10 @@ opts() ->
       "duration of single benchmark (default is 10s)"},
      {samples, $n, "num-samples", integer,
       "number of samples to collect and analyze (default is 100)"},
-     {confidence, $c, "confidence", integer,
+     {confidence, undefined, "confidence", integer,
       "confidence level: 80, 90, 95, 98, 99 (default is 95)"},
+     {cover, $c, "cover", {boolean, false},
+      "run benchmarks in coverage mode (no measurements are made), generate cover data"},
      {parameter, $p, "parameter", string,
       "which parameter to measure: wall_time, memory, reductions (default wall_time)"},
      {save_baseline, undefined, "save-baseline", string,
@@ -71,10 +81,31 @@ run_benches(Benches, Baseline, OptsL) ->
               rebar_api:info("Testing ~s:~s()", [Mod, Fun]),
               Samples = rebar3_bench_runner:run(Mod, Fun, Opts),
               rebar_api:debug("Raw samples:~n~p", [Samples]),
-              Stats = stats(Mod, Fun, Samples, Baseline, Opts),
-              report(Stats, Opts),
+              case maps:get(cover, Opts, false) of
+                  false ->
+                      Stats = stats(Mod, Fun, Samples, Baseline, Opts),
+                      report(Stats, Opts);
+                  true ->
+                      %% Don't print the report when `cover' option is provided
+                      noop
+              end,
               {{Mod, Fun}, Samples}
       end, Benches).
+
+maybe_cover_compile(State, false) ->
+    State;
+maybe_cover_compile(State0, true) ->
+    rebar_api:info("Running in cover mode (cover_enabled=true, no measurements)", []),
+    State1 = rebar_state:set(State0, cover_enabled, true),
+    ok = rebar_prv_cover:maybe_cover_compile(State1),
+    State1.
+
+maybe_write_coverdata(_State, false) ->
+    ok;
+maybe_write_coverdata(State, true) ->
+    rebar_api:info("Cover data collected. Use `rebar3 cover` to analyze 'bench' section.", []),
+    rebar_prv_cover:maybe_write_coverdata(State, ?PROVIDER).
+
 
 %%
 %% Stats calculation

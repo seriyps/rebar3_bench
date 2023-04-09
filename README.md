@@ -14,7 +14,7 @@ Use
 Add the plugin to your rebar config:
 
 ```
-{plugins, [rebar3_bench]}.
+{project_plugins, [rebar3_bench]}.
 ```
 
 Add `bench_*` modules to `"test"` directory of your application:

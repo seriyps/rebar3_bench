@@ -90,6 +90,6 @@ ets({input, Tab}) ->
     ok.
 
 bench_ets(_, Tab) ->
-    {ets:lookup(-1, Tab),
-     ets:lookup(5000, Tab),
-     ets:lookup(1000000, Tab)}.
+    {ets:lookup(Tab, -1),
+     ets:lookup(Tab, 5000),
+     ets:lookup(Tab, 1000000)}.

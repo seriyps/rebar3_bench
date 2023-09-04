@@ -85,7 +85,7 @@ run_benches(Benches, Baseline, OptsL) ->
               rebar_api:debug("Raw samples:~n~p", [Samples]),
               case maps:get(cover, Opts, false) of
                   false ->
-                      case maps:get(no_stats, Opts) of
+                      case maps:get(no_stats, Opts, false) of
                           true ->
                               noop;
                           false ->

@@ -68,6 +68,8 @@ opts() ->
       "run benchmarks in coverage mode (no measurements are made), generate cover data"},
      {parameter, $p, "parameter", {string, "wall_time"},
       "which parameter to measure: wall_time, memory, reductions"},
+     {no_stats, undefined, "no-stats", {boolean, false},
+      "do not produce summary stats"},
      {save_baseline, undefined, "save-baseline", {string, "_tip"},
       "save benchmark data to file with this name"},
      {baseline, undefined, "baseline", {string, "_tip"},
@@ -83,8 +85,13 @@ run_benches(Benches, Baseline, OptsL) ->
               rebar_api:debug("Raw samples:~n~p", [Samples]),
               case maps:get(cover, Opts, false) of
                   false ->
-                      Stats = stats(Mod, Fun, Samples, Baseline, Opts),
-                      report(Stats, Opts);
+                      case maps:get(no_stats, Opts, false) of
+                          true ->
+                              noop;
+                          false ->
+                              Stats = stats(Mod, Fun, Samples, Baseline, Opts),
+                              report(Stats, Opts)
+                      end;
                   true ->
                       %% Don't print the report when `cover' option is provided
                       noop

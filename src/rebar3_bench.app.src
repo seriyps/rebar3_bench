@@ -1,6 +1,6 @@
 {application, rebar3_bench,
  [{description, "Rebar3 microbenchmark plugin"},
-  {vsn, "0.2.2"},
+  {vsn, "0.3.0"},
   {registered, []},
   {applications,
    [kernel,

@@ -30,50 +30,54 @@ my_app/
     └── bench_calc.erl
 ```
 
-Each module should have one or more exported `bench_*` functions accompanied by optional benchmark
-options functions:
+Each module should have one or more exported pairs of functions:
+
+* `bench_<name>/1` function which prepares the input and state data for the benchmark (called before
+  and after the benchmark)
+* `<name>/2` function that is the body of the benchmark - called hundreds of times
+
+NOTE: in the older versions of `rebar3_bench` the naming of the callbacks was opposite!
+See `callback_style` option.
 
 ```
--export([reverse/1,
-         bench_reverse/2,
-         sort/1,
-         bench_sort/2]).
+-export([bench_reverse/1,
+         reverse/2,
+         bench_sort/1,
+         sort/2]).
 
-reverse({input, _}) ->
+bench_reverse({input, _}) ->
     lists:seq(1, 1000).
 
-bench_reverse(List, _) ->
+reverse(List, _) ->
     lists:reverse(List).
 
 
-sort({input, _}) ->
+bench_sort({input, _}) ->
     lists:seq(1, 1000).
 
-bench_sort(List, _) ->
+sort(List, _) ->
     lists:sort(List).
 
 
-server(init) ->
+bench_server(init) ->
     % init is called only once in the same process where benchmark will be running
     % at the very beginning of benchmark.
     % Value returned from this callback will be passed to server({input, State}),
     % bench_server(_, State) and server({stop, State})
     my_server:start();
-server({input, _Server}) ->
+bench_server({input, _Server}) ->
     % This callback is called after `init` to generate benchmark input data.
     % Returned value will be passed to bench_server(Input, _)
     binary:copy(<<1>>, 1024);
-server({stop, Server}) ->
+bench_server({stop, Server}) ->
     % Called only once at the very end of benchmark
     my_server:stop(Server).
 
-bench_server(BinaryInput, Server) ->
+server(BinaryInput, Server) ->
     my_server:send(BinaryInput, Server),
     BinaryInput = my_server:recv(Server).
 ```
 
-Options function will be normally called once before and after benchmark and `bench_` function will be
-called lots of times.
 Each benchmark is executed in a separate process with `{priority, high}, {min_heap_size, 5mb}`.
 Garbage-collection is forced before time measurement is started, but if your benchmark
 function produces a lot of heap data and benchmark duration (`-t` option) is high enough, it's
@@ -85,7 +89,7 @@ use of random generators, time or other side effects.
 Then just call your plugin directly in an existing application (it will auto-discover your benchmarks):
 
 ```
-$ rebar3 bench
+$ rebar3 bench --callback-style=new
 ===> Testing bench_kv:bench_maps()
 ===> Stats for wall_time
 Min:              133.00ns
@@ -113,7 +117,7 @@ significant difference between results of two runs - if there is an improvement 
 regression:
 
 ```
-$ rebar3 bench
+$ rebar3 bench --callback-style=new
 ===> Testing bench_kv:bench_maps()
 ===> Stats for wall_time
 Min:                133.00ns (+    0.00ns /  0.3%)
@@ -183,6 +187,7 @@ Usage: rebar3 bench [-d [<dir>]] [-m <module>] [-b <benches>]
                     [-p [<parameter>]]
                     [--save-baseline [<save_baseline>]]
                     [--baseline [<baseline>]]
+                    [--callback-style [<callback_style>]]
 
   -d, --dir          directory where the benchmark tests are located 
                      [default: test]
@@ -200,4 +205,6 @@ Usage: rebar3 bench [-d [<dir>]] [-m <module>] [-b <benches>]
   --save-baseline    save benchmark data to file with this name [default: 
                      _tip]
   --baseline         use data stored in file as baseline [default: _tip]
+  --callback-style   naming of benchmark and benchmark options functions
+                     (new | legacy) [default: legacy]
 ```

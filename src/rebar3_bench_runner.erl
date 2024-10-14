@@ -18,7 +18,8 @@
                     reductions => float(),
                     wall_time => float()}.
 
--type opts() :: #{duration => pos_integer(),
+-type opts() :: #{callback_style => new | legacy,
+                  duration => pos_integer(),
                   samples => pos_integer(),
                   warmup_duration => pos_integer(),
                   log_fun => fun( (string(), [any()]) -> any() )}.
@@ -26,7 +27,8 @@
 -spec run(module(), atom(), opts()) -> [sample()].
 run(Mod, Fun, Opts0) ->
     Opts1 = maps:merge(
-              #{duration => 10,
+              #{callback_style => new,
+                duration => 10,
                 samples => 100,
                 warmup_duration => 3,
                 log_fun => fun io:format/2},
@@ -54,7 +56,7 @@ do_run(From, Ref, Mod, Fun, Opts) ->
     Res = with_setup(
             fun(St) ->
                     do_run(Mod, Fun, St, Opts)
-            end, Mod, Fun),
+            end, Mod, Fun, maps:get(callback_style, Opts)),
     From ! {result, self(), Ref, Res}.
 
 do_run(Mod, Fun, St, Opts) ->
@@ -62,7 +64,7 @@ do_run(Mod, Fun, St, Opts) ->
     log(Opts, "Warmup for ~ws~n",
         [erlang:convert_time_unit(
            maps:get(warmup_duration, Opts), native, second)]),
-    Input = input(Mod, Fun, St),
+    Input = input(Mod, Fun, St, maps:get(callback_style, Opts)),
     WarmupRuns = warmup(Mod, Fun, Input, St, Opts),
     log(Opts, "Bench function called ~p times during warmup~n", [WarmupRuns]),
     %% run
@@ -81,25 +83,33 @@ do_run(Mod, Fun, St, Opts) ->
 %% Calls
 %% `State = Mod:OptsFun(init)' before and
 %% `Mod:OptsFun({stop, State})' after F
-with_setup(F, Mod, Fun) ->
-    St = opts_call(Mod, Fun, init, []),
+with_setup(F, Mod, Fun, CallbackStyle) ->
+    St = opts_call(Mod, Fun, init, [], CallbackStyle),
     try F(St)
     after
-        opts_call(Mod, Fun, {stop, St}, [])
+        opts_call(Mod, Fun, {stop, St}, [], CallbackStyle)
     end.
 
-input(Mod, Fun, St) ->
-    opts_call(Mod, Fun, {input, St}, []).
+input(Mod, Fun, St, CallbackStyle) ->
+    opts_call(Mod, Fun, {input, St}, [], CallbackStyle).
 
-opts_call(Mod, Name, Arg, Default) ->
-    F = opts_fun(Mod, Name),
+opts_call(Mod, Name, Arg, Default, CallbackStyle) ->
+    F = opts_fun(Mod, Name, CallbackStyle),
     try F(Arg)
     catch error:R when R == undef;
                        R == function_clause ->
             Default
     end.
 
-opts_fun(Mod, Fun) ->
+%% New style:
+%% benchmark options function is `bench_<name>/1', function under test is `<name>/2'
+%% Old style:
+%% opposite - options function is `<name>/1', function under test is `bench_<name>/2'
+opts_fun(Mod, Fun, new) ->
+    NameS = atom_to_list(Fun),
+    Name = list_to_atom("bench_" ++ NameS),
+    fun Mod:Name/1;
+opts_fun(Mod, Fun, legacy) ->
     "bench_" ++ NameS = atom_to_list(Fun),
     Name = list_to_atom(NameS),
     fun Mod:Name/1.

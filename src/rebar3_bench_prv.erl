@@ -73,11 +73,14 @@ opts() ->
      {save_baseline, undefined, "save-baseline", {string, "_tip"},
       "save benchmark data to file with this name"},
      {baseline, undefined, "baseline", {string, "_tip"},
-      "use data stored in file as baseline"}].
+      "use data stored in file as baseline"},
+     {callback_style, undefined, "callback-style", {string, "legacy"},
+      "naming of benchmark and benchmark options functions (new | legacy)"}].
 
 run_benches(Benches, Baseline, OptsL) ->
     Opts0 = maps:from_list(OptsL),
-    Opts = Opts0#{log_fun => fun rebar_api:debug/2},
+    Opts = Opts0#{log_fun => fun rebar_api:debug/2,
+                  callback_style => cb_style(OptsL)},
     lists:map(
       fun({Mod, Fun}) ->
               rebar_api:info("Testing ~s:~s()", [Mod, Fun]),
@@ -359,10 +362,11 @@ unit(Reds, reductions) ->
 %% Discovery
 
 find_benches(State, Opts) ->
+    CallbackStyle = cb_style(Opts),
     Dir = proplists:get_value(dir, Opts, "test"),
     Mods = maybe_parse_csv(proplists:get_value(module, Opts, any)),
     Benches = maybe_parse_csv(proplists:get_value(benches, Opts, any)),
-    Found = find_benches(State, Dir, Mods, Benches),
+    Found = find_benches(State, Dir, Mods, Benches, CallbackStyle),
     rebar_api:debug("Found: ~p", [Found]),
     {ModsFound0, BenchesFound0} = lists:unzip(Found),
     ModsFound = [atom_to_list(Mod) || Mod <- ModsFound0],
@@ -389,7 +393,7 @@ is_atom_list(_) -> false.
 parse_csv(IoData) ->
     re:split(IoData, ", *", [{return, list}]).
 
-find_benches(State, Dir, Mods, Benches) ->
+find_benches(State, Dir, Mods, Benches, CallbackStyle) ->
     rebar_api:debug("Dir: ~p", [Dir]),
     rebar_api:debug("Mods: ~p", [Mods]),
     rebar_api:debug("Benches: ~p", [Benches]),
@@ -417,7 +421,7 @@ find_benches(State, Dir, Mods, Benches) ->
              {ok, Files} <- [file:list_dir(TestDir)],
              File <- Files,
              bench_suite(Mods, File),
-             Bench <- benches(Benches, module(File))].
+             Bench <- benches(Benches, module(File), CallbackStyle)].
 
 
 make_absolute_path(Path) ->
@@ -442,14 +446,21 @@ bench_suite(Mods, File) ->
      (Mods =/= any andalso lists:member(Mod, Mods))).
 
 
-benches(any, Mod) ->
-    [{Mod, Bench} || {Bench, 2} <- Mod:module_info(exports), bench_prefix(Bench)];
-benches(Benches, Mod) ->
-    [{Mod, Bench} || {Bench, 2} <- Mod:module_info(exports),
-                    lists:member(atom_to_list(Bench), Benches)].
+benches(any, Mod, CallbackStyle) ->
+    Exports = Mod:module_info(exports),
+    [{Mod, F} || {F, 2} <- Exports, is_benchmark(F, Exports, CallbackStyle)];
+benches(Benches, Mod, CallbackStyle) ->
+    Exports = Mod:module_info(exports),
+    [{Mod, F} || {F, 2} <- Exports,
+                     is_benchmark(F, Exports, CallbackStyle),
+                     lists:member(atom_to_list(F), Benches)].
 
-bench_prefix(Atom) ->
-    lists:prefix("bench_", atom_to_list(Atom)).
+is_benchmark(F, Exports, new) ->
+    %% For new-style callbacks `bench_<name>/1' callback is mandatory
+    OptsFunName = list_to_atom("bench_" ++ atom_to_list(F)),
+    lists:keyfind(OptsFunName, 1, Exports) =/= false;
+is_benchmark(F, _, legacy) ->
+    lists:prefix("bench_", atom_to_list(F)).
 
 
 module(File) ->
@@ -521,6 +532,12 @@ convert_dump({?DUMP_FMT_VERSION, CompactRuns}) ->
                                  maps:from_list(lists:zip(?DUMP_010_FIELDS, Values))
                          end, CompactSamples)}
               end, CompactRuns).
+
+cb_style(CliOpts) ->
+    case proplists:get_value(callback_style, CliOpts) of
+        "new" -> new;
+        "legacy" -> legacy
+    end.
 
 %% FIXME:
 valid_ci(80) -> 1;
